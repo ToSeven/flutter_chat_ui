@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_chat_types/flutter_chat_types.dart' as types;
 
 import '../models/bubble_rtl_alignment.dart';
+import '../models/message_spacer.dart';
 import 'state/inherited_chat_theme.dart';
 import 'state/inherited_user.dart';
 import 'typing_indicator.dart';
@@ -105,6 +106,7 @@ class _ChatListState extends State<ChatList>
 
           return message1.id == message2.id;
         } else {
+
           return item1 == item2;
         }
       },
@@ -114,6 +116,7 @@ class _ChatListState extends State<ChatList>
       update.when(
         insert: (pos, count) {
           _listKey.currentState?.insertItem(pos);
+          // print("insert"+pos.toString()+" "+ count.toString());
         },
         remove: (pos, count) {
           final item = oldList[pos];
@@ -139,7 +142,7 @@ class _ChatListState extends State<ChatList>
       return SizeTransition(
         key: _valueKeyForItem(item),
         axisAlignment: -1,
-        sizeFactor: animation.drive(CurveTween(curve: Curves.easeOutQuad)),
+        sizeFactor: animation.drive(CurveTween(curve: Curves.easeOut)),
         child: widget.itemBuilder(item, index),
       );
     } catch (e) {
