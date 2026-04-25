@@ -93,6 +93,21 @@ class _ChatListState extends State<ChatList>
     super.initState();
 
     didUpdateWidget(widget);
+
+    // Scroll to bottom when ChatList is created with existing messages
+    // (e.g., loading a session from history). Without this, the initial
+    // didUpdateWidget(widget) sees identical old/new lists and skips scrolling.
+    if (widget.items.length > 2) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.scrollController.hasClients) {
+          widget.scrollController.animateTo(
+            widget.scrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInQuad,
+          );
+        }
+      });
+    }
   }
 
   void _calculateDiffs(List<Object> oldList) async {
@@ -161,34 +176,37 @@ class _ChatListState extends State<ChatList>
         ),
       );
 
-  // Hacky solution to reconsider.
   void _scrollToBottomIfNeeded(List<Object> oldList) {
     try {
-      // Take index 1 because there is always a spacer on index 0.
-      final oldItem = oldList[1];
-      final item = widget.items[1];
+      bool shouldScroll = false;
 
-      if (oldItem is Map<String, Object> && item is Map<String, Object>) {
-        final oldMessage = oldItem['message']! as types.Message;
-        final message = item['message']! as types.Message;
-
-        // Compare items to fire only on newly added messages.
-        if (oldMessage.id != message.id) {
-          // Run only for sent message.
-          if (message.author.id == InheritedUser.of(context).user.id) {
-            // Delay to give some time for Flutter to calculate new
-            // size after new message was added.
-            Future.delayed(const Duration(milliseconds: 100), () {
-              if (widget.scrollController.hasClients) {
-                widget.scrollController.animateTo(
-                  0,
-                  duration: const Duration(milliseconds: 200),
-                  curve: Curves.easeInQuad,
-                );
-              }
-            });
+      // Case 1: New items added (new message appended at end)
+      if (oldList.length < widget.items.length) {
+        shouldScroll = true;
+      }
+      // Case 2: Session switch (same count but different content)
+      else if (oldList.length > 1 && widget.items.length > 1) {
+        final oldItem = oldList[1];
+        final item = widget.items[1];
+        if (oldItem is Map<String, Object> && item is Map<String, Object>) {
+          final oldMessage = oldItem['message']! as types.Message;
+          final message = item['message']! as types.Message;
+          if (oldMessage.id != message.id) {
+            shouldScroll = true;
           }
         }
+      }
+
+      if (shouldScroll) {
+        Future.delayed(const Duration(milliseconds: 200), () {
+          if (widget.scrollController.hasClients) {
+            widget.scrollController.animateTo(
+              widget.scrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeInQuad,
+            );
+          }
+        });
       }
     } catch (e) {
       // Do nothing if there are no items.
@@ -202,6 +220,7 @@ class _ChatListState extends State<ChatList>
     if (maybeMessage is Map<String, Object>) {
       return f(maybeMessage['message'] as types.Message);
     }
+    
     return null;
   }
 
@@ -267,7 +286,7 @@ class _ChatListState extends State<ChatList>
           controller: widget.scrollController,
           keyboardDismissBehavior: widget.keyboardDismissBehavior,
           physics: widget.scrollPhysics,
-          reverse: true,
+          reverse: false,
           slivers: [
             if (widget.bottomWidget != null)
               SliverToBoxAdapter(child: widget.bottomWidget),
