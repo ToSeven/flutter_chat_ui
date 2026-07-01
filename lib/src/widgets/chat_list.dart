@@ -8,6 +8,30 @@ import 'state/inherited_chat_theme.dart';
 import 'state/inherited_user.dart';
 import 'typing_indicator.dart';
 
+/// Smoothly scroll [controller] to its max scroll extent (the chat bottom).
+///
+/// Uses a decelerating curve ([Curves.easeOutCubic]) and scales the animation
+/// duration with the remaining distance (clamped to 250–700ms), so the list
+/// *settles* at the bottom instead of slamming into it. Short scrolls finish
+/// quickly; long scrolls stay readable.
+///
+/// Returns the duration used, or [Duration.zero] when there is nothing to
+/// scroll (already at the bottom / no clients attached), so callers can skip a
+/// redundant follow-up correction.
+Duration smoothScrollToBottom(ScrollController controller) {
+  if (!controller.hasClients) return Duration.zero;
+  final position = controller.position;
+  final distance = (position.maxScrollExtent - position.pixels).abs();
+  if (distance < 1) return Duration.zero;
+  final durationMs = (distance * 0.35).clamp(250.0, 700.0).round();
+  controller.animateTo(
+    position.maxScrollExtent,
+    duration: Duration(milliseconds: durationMs),
+    curve: Curves.easeOutCubic,
+  );
+  return Duration(milliseconds: durationMs);
+}
+
 /// Animated list that handles automatic animations and pagination.
 class ChatList extends StatefulWidget {
   /// Creates a chat list widget.
@@ -99,13 +123,7 @@ class _ChatListState extends State<ChatList>
     // didUpdateWidget(widget) sees identical old/new lists and skips scrolling.
     if (widget.items.length > 2) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && widget.scrollController.hasClients) {
-          widget.scrollController.animateTo(
-            widget.scrollController.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeInQuad,
-          );
-        }
+        _smoothScrollToBottom();
       });
     }
   }
@@ -198,15 +216,11 @@ class _ChatListState extends State<ChatList>
       }
 
       if (shouldScroll) {
-        Future.delayed(const Duration(milliseconds: 200), () {
-          if (widget.scrollController.hasClients) {
-            widget.scrollController.animateTo(
-              widget.scrollController.position.maxScrollExtent,
-              duration: const Duration(milliseconds: 200),
-              curve: Curves.easeInQuad,
-            );
-          }
-        });
+        // Wait one frame for the SliverAnimatedList to lay out newly inserted
+        // items before measuring maxScrollExtent; the follow-up correction
+        // inside [_smoothScrollToBottom] handles any residual height growth
+        // from the items' SizeTransition animations.
+        Future.delayed(const Duration(milliseconds: 180), _smoothScrollToBottom);
       }
     } catch (e) {
       // Do nothing if there are no items.
@@ -215,6 +229,23 @@ class _ChatListState extends State<ChatList>
 
   Key? _valueKeyForItem(Object item) =>
       _mapMessage(item, (message) => ValueKey(message.id));
+
+  /// Smoothly scroll the chat list to the latest message.
+  ///
+  /// Wraps [smoothScrollToBottom] with a follow-up correction so we still land
+  /// exactly at the bottom after [SliverAnimatedList]'s item SizeTransitions
+  /// finish growing [maxScrollExtent] — otherwise the first scroll can stop a
+  /// few pixels short and the last messages pop in underneath.
+  void _smoothScrollToBottom() {
+    final firstDuration = smoothScrollToBottom(widget.scrollController);
+    if (firstDuration == Duration.zero) return;
+
+    // Re-evaluate once the item size animations have settled.
+    Future.delayed(firstDuration + const Duration(milliseconds: 80), () {
+      if (!mounted) return;
+      smoothScrollToBottom(widget.scrollController);
+    });
+  }
 
   T? _mapMessage<T>(Object maybeMessage, T Function(types.Message) f) {
     if (maybeMessage is Map<String, Object>) {
