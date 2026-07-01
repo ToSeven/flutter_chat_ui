@@ -349,11 +349,15 @@ class ChatState extends State<Chat> {
   bool _isImageViewVisible = false;
 
   late final AutoScrollController _scrollController;
+  late final bool _ownsScrollController;
 
   @override
   void initState() {
     super.initState();
 
+    // Only dispose a controller we created; if the caller passes their own,
+    // they own its lifecycle (lets the app reuse it for a scroll-to-bottom FAB).
+    _ownsScrollController = widget.scrollController == null;
     _scrollController = widget.scrollController ?? AutoScrollController();
 
     didUpdateWidget(widget);
@@ -598,7 +602,9 @@ class ChatState extends State<Chat> {
   @override
   void dispose() {
     _galleryPageController?.dispose();
-    _scrollController.dispose();
+    if (_ownsScrollController) {
+      _scrollController.dispose();
+    }
     super.dispose();
   }
 
