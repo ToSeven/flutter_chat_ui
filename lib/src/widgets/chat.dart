@@ -87,6 +87,9 @@ class Chat extends StatefulWidget {
     this.scrollController,
     this.scrollPhysics,
     this.scrollToUnreadOptions = const ScrollToUnreadOptions(),
+    this.rememberScrollPosition = false,
+    this.initialScrollToMessageId,
+    this.onNearBottomChanged,
     this.showUserAvatars = false,
     this.showUserNames = false,
     this.systemMessageBuilder,
@@ -275,6 +278,21 @@ class Chat extends StatefulWidget {
 
   /// Controls if and how the chat should scroll to the newest unread message.
   final ScrollToUnreadOptions scrollToUnreadOptions;
+
+  /// Kill-switch for the scroll-position memory feature. When true the list
+  /// restores the previous reading position on open (see
+  /// [initialScrollToMessageId]) and only auto-follows new messages while the
+  /// viewport is near the bottom, instead of always jumping to the bottom.
+  final bool rememberScrollPosition;
+
+  /// Message id to scroll into view when the chat is first opened, restoring
+  /// the user's last reading position. Only honored when
+  /// [rememberScrollPosition] is true.
+  final String? initialScrollToMessageId;
+
+  /// Notifies the app when the viewport enters/leaves the bottom region (with
+  /// hysteresis). Used to toggle a scroll-to-bottom button and clear unread.
+  final ValueChanged<bool>? onNearBottomChanged;
 
   /// See [Message.showUserAvatars].
   final bool showUserAvatars;
@@ -655,6 +673,10 @@ class ChatState extends State<Chat> {
                                         widget.onEndReachedThreshold,
                                     scrollController: _scrollController,
                                     scrollPhysics: widget.scrollPhysics,
+                                    rememberScrollPosition:
+                                        widget.rememberScrollPosition,
+                                    onNearBottomChanged:
+                                        widget.onNearBottomChanged,
                                     typingIndicatorOptions:
                                         widget.typingIndicatorOptions,
                                     useTopSafeAreaInset:

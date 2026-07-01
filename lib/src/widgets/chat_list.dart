@@ -47,6 +47,8 @@ class ChatList extends StatefulWidget {
     this.onEndReachedThreshold,
     required this.scrollController,
     this.scrollPhysics,
+    this.rememberScrollPosition = false,
+    this.onNearBottomChanged,
     this.typingIndicatorOptions,
     required this.useTopSafeAreaInset,
   });
@@ -85,6 +87,14 @@ class ChatList extends StatefulWidget {
 
   /// Determines the physics of the scroll view.
   final ScrollPhysics? scrollPhysics;
+
+  /// Kill-switch for scroll-position memory. When true the list does NOT jump
+  /// to the bottom on open (the [Chat] widget handles restore), and only
+  /// auto-follows new messages while the viewport is near the bottom.
+  final bool rememberScrollPosition;
+
+  /// Notifies the app when the viewport enters/leaves the bottom region.
+  final ValueChanged<bool>? onNearBottomChanged;
 
   /// Used to build typing indicator according to options.
   /// See [TypingIndicatorOptions].
