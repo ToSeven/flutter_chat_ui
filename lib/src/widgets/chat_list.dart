@@ -32,6 +32,12 @@ Duration smoothScrollToBottom(ScrollController controller) {
   return Duration(milliseconds: durationMs);
 }
 
+// Hysteresis band (in px from max scroll extent) for the near-bottom state.
+// Within 80px counts as "at the bottom" (auto-follow + hide button); beyond
+// 200px counts as "away" (show button). The gap prevents flicker at the edge.
+const double _kNearBottomThreshold = 80;
+const double _kShowButtonThreshold = 200;
+
 /// Animated list that handles automatic animations and pagination.
 class ChatList extends StatefulWidget {
   /// Creates a chat list widget.
@@ -117,6 +123,9 @@ class _ChatListState extends State<ChatList>
   late final AnimationController _controller = AnimationController(vsync: this);
 
   bool _indicatorOnScrollStatus = false;
+  // Tracks the viewport's near-bottom state for [onNearBottomChanged].
+  // Defaults to true so a freshly opened chat follows new messages.
+  bool _isNearBottom = true;
   bool _isNextPageLoading = false;
   final GlobalKey<SliverAnimatedListState> _listKey =
       GlobalKey<SliverAnimatedListState>();
@@ -291,6 +300,20 @@ class _ChatListState extends State<ChatList>
             setState(() {
               _indicatorOnScrollStatus = !_indicatorOnScrollStatus;
             });
+          }
+
+          // Report viewport near-bottom state (drives the scroll-to-bottom
+          // button and the auto-follow decision). Hysteresis avoids flicker.
+          if (widget.onNearBottomChanged != null) {
+            final distance =
+                notification.metrics.maxScrollExtent - notification.metrics.pixels;
+            final near = _isNearBottom
+                ? distance <= _kShowButtonThreshold
+                : distance <= _kNearBottomThreshold;
+            if (near != _isNearBottom) {
+              _isNearBottom = near;
+              widget.onNearBottomChanged!(near);
+            }
           }
 
           if (widget.onEndReached == null || widget.isLastPage == true) {
