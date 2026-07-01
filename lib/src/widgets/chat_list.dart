@@ -140,7 +140,9 @@ class _ChatListState extends State<ChatList>
     // Scroll to bottom when ChatList is created with existing messages
     // (e.g., loading a session from history). Without this, the initial
     // didUpdateWidget(widget) sees identical old/new lists and skips scrolling.
-    if (widget.items.length > 2) {
+    // Skipped when rememberScrollPosition is on — the Chat widget then restores
+    // the saved anchor instead of jumping to the bottom.
+    if (widget.items.length > 2 && !widget.rememberScrollPosition) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _smoothScrollToBottom();
       });
@@ -215,11 +217,12 @@ class _ChatListState extends State<ChatList>
 
   void _scrollToBottomIfNeeded(List<Object> oldList) {
     try {
-      bool shouldScroll = false;
+      bool newItemsAdded = false;
+      bool sessionSwitched = false;
 
       // Case 1: New items added (new message appended at end)
       if (oldList.length < widget.items.length) {
-        shouldScroll = true;
+        newItemsAdded = true;
       }
       // Case 2: Session switch (same count but different content)
       else if (oldList.length > 1 && widget.items.length > 1) {
@@ -229,12 +232,22 @@ class _ChatListState extends State<ChatList>
           final oldMessage = oldItem['message']! as types.Message;
           final message = item['message']! as types.Message;
           if (oldMessage.id != message.id) {
-            shouldScroll = true;
+            sessionSwitched = true;
           }
         }
       }
 
-      if (shouldScroll) {
+      // Decide whether to auto-scroll to the bottom:
+      //  - New messages: follow along only when the viewport is already near
+      //    the bottom (otherwise the user is reading history, so we leave the
+      //    list in place — the app counts these as unread).
+      //  - Session switch: only jump in legacy mode. When rememberScrollPosition
+      //    is on, the Chat widget restores the saved anchor instead.
+      final shouldFollow = newItemsAdded && _isNearBottom;
+      final shouldJumpOnSwitch =
+          sessionSwitched && !widget.rememberScrollPosition;
+
+      if (shouldFollow || shouldJumpOnSwitch) {
         // Wait one frame for the SliverAnimatedList to lay out newly inserted
         // items before measuring maxScrollExtent; the follow-up correction
         // inside [_smoothScrollToBottom] handles any residual height growth
@@ -302,18 +315,17 @@ class _ChatListState extends State<ChatList>
             });
           }
 
-          // Report viewport near-bottom state (drives the scroll-to-bottom
-          // button and the auto-follow decision). Hysteresis avoids flicker.
-          if (widget.onNearBottomChanged != null) {
-            final distance =
-                notification.metrics.maxScrollExtent - notification.metrics.pixels;
-            final near = _isNearBottom
-                ? distance <= _kShowButtonThreshold
-                : distance <= _kNearBottomThreshold;
-            if (near != _isNearBottom) {
-              _isNearBottom = near;
-              widget.onNearBottomChanged!(near);
-            }
+          // Track near-bottom state (hysteresis). Always tracked so the
+          // auto-follow gate (_scrollToBottomIfNeeded) works regardless of
+          // whether the app wires the callback.
+          final distance =
+              notification.metrics.maxScrollExtent - notification.metrics.pixels;
+          final near = _isNearBottom
+              ? distance <= _kShowButtonThreshold
+              : distance <= _kNearBottomThreshold;
+          if (near != _isNearBottom) {
+            _isNearBottom = near;
+            widget.onNearBottomChanged?.call(near);
           }
 
           if (widget.onEndReached == null || widget.isLastPage == true) {

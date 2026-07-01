@@ -365,6 +365,9 @@ class ChatState extends State<Chat> {
   PageController? _galleryPageController;
   bool _hadScrolledToUnreadOnOpen = false;
   bool _isImageViewVisible = false;
+  // Last anchor id we restored on open, so a session switch within the same
+  // ChatState (same widget element) re-restores when the anchor changes.
+  String? _lastRestoredMessageId;
 
   late final AutoScrollController _scrollController;
   late final bool _ownsScrollController;
@@ -419,6 +422,18 @@ class ChatState extends State<Chat> {
         highlightDuration: duration ?? const Duration(seconds: 3),
       );
 
+  /// Smoothly scroll to the very bottom of the chat. Used by the app's
+  /// scroll-to-bottom button. Wraps [smoothScrollToBottom] with the same
+  /// follow-up correction the list uses, so it lands exactly at the bottom
+  /// even while item size animations are still settling.
+  void scrollToBottom() {
+    final first = smoothScrollToBottom(_scrollController);
+    if (first == Duration.zero) return;
+    Future.delayed(first + const Duration(milliseconds: 80), () {
+      smoothScrollToBottom(_scrollController);
+    });
+  }
+
   Widget _emptyStateBuilder() =>
       widget.emptyState ??
       Container(
@@ -446,6 +461,32 @@ class ChatState extends State<Chat> {
       });
       _hadScrolledToUnreadOnOpen = true;
     }
+  }
+
+  /// Restore the user's last reading position by scrolling
+  /// [Chat.initialScrollToMessageId] to the top of the viewport. Re-runs
+  /// whenever the anchor changes (e.g. switching sessions within the same
+  /// widget element). Honored only when [Chat.rememberScrollPosition].
+  void _maybeRestoreScrollPosition() {
+    if (!widget.rememberScrollPosition) return;
+    final id = widget.initialScrollToMessageId;
+    if (id == null || _chatMessages.isEmpty) return;
+    if (id == _lastRestoredMessageId) return;
+    _lastRestoredMessageId = id;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || _lastRestoredMessageId != id) return;
+      // Give the SliverAnimatedList a frame to lay out the restored items.
+      await Future.delayed(const Duration(milliseconds: 180));
+      final index = chatMessageAutoScrollIndexById[id];
+      if (index != null) {
+        await _scrollController.scrollToIndex(
+          index,
+          preferPosition: AutoScrollPosition.begin,
+          duration: const Duration(milliseconds: 300),
+        );
+      }
+    });
   }
 
   /// We need the index for auto scrolling because it will scroll until it reaches an index higher or equal that what it is scrolling towards. Index will be null for removed messages. Can just set to -1 for auto scroll.
@@ -614,6 +655,7 @@ class ChatState extends State<Chat> {
 
       _refreshAutoScrollMapping();
       _maybeScrollToFirstUnread();
+      _maybeRestoreScrollPosition();
     }
   }
 
