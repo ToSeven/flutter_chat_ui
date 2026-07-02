@@ -8,36 +8,6 @@ import 'state/inherited_chat_theme.dart';
 import 'state/inherited_user.dart';
 import 'typing_indicator.dart';
 
-/// Smoothly scroll [controller] to its max scroll extent (the chat bottom).
-///
-/// Uses a decelerating curve ([Curves.easeOutCubic]) and scales the animation
-/// duration with the remaining distance (clamped to 250–700ms), so the list
-/// *settles* at the bottom instead of slamming into it. Short scrolls finish
-/// quickly; long scrolls stay readable.
-///
-/// Returns the duration used, or [Duration.zero] when there is nothing to
-/// scroll (already at the bottom / no clients attached), so callers can skip a
-/// redundant follow-up correction.
-Duration smoothScrollToBottom(ScrollController controller) {
-  if (!controller.hasClients) return Duration.zero;
-  final position = controller.position;
-  final distance = (position.maxScrollExtent - position.pixels).abs();
-  if (distance < 1) return Duration.zero;
-  final durationMs = (distance * 0.35).clamp(250.0, 700.0).round();
-  controller.animateTo(
-    position.maxScrollExtent,
-    duration: Duration(milliseconds: durationMs),
-    curve: Curves.easeOutCubic,
-  );
-  return Duration(milliseconds: durationMs);
-}
-
-// Hysteresis band (in px from max scroll extent) for the near-bottom state.
-// Within 80px counts as "at the bottom" (auto-follow + hide button); beyond
-// 200px counts as "away" (show button). The gap prevents flicker at the edge.
-const double _kNearBottomThreshold = 80;
-const double _kShowButtonThreshold = 200;
-
 /// Animated list that handles automatic animations and pagination.
 class ChatList extends StatefulWidget {
   /// Creates a chat list widget.
@@ -53,8 +23,6 @@ class ChatList extends StatefulWidget {
     this.onEndReachedThreshold,
     required this.scrollController,
     this.scrollPhysics,
-    this.rememberScrollPosition = false,
-    this.onNearBottomChanged,
     this.typingIndicatorOptions,
     required this.useTopSafeAreaInset,
   });
@@ -94,14 +62,6 @@ class ChatList extends StatefulWidget {
   /// Determines the physics of the scroll view.
   final ScrollPhysics? scrollPhysics;
 
-  /// Kill-switch for scroll-position memory. When true the list does NOT jump
-  /// to the bottom on open (the [Chat] widget handles restore), and only
-  /// auto-follows new messages while the viewport is near the bottom.
-  final bool rememberScrollPosition;
-
-  /// Notifies the app when the viewport enters/leaves the bottom region.
-  final ValueChanged<bool>? onNearBottomChanged;
-
   /// Used to build typing indicator according to options.
   /// See [TypingIndicatorOptions].
   final TypingIndicatorOptions? typingIndicatorOptions;
@@ -123,9 +83,6 @@ class _ChatListState extends State<ChatList>
   late final AnimationController _controller = AnimationController(vsync: this);
 
   bool _indicatorOnScrollStatus = false;
-  // Tracks the viewport's near-bottom state for [onNearBottomChanged].
-  // Defaults to true so a freshly opened chat follows new messages.
-  bool _isNearBottom = true;
   bool _isNextPageLoading = false;
   final GlobalKey<SliverAnimatedListState> _listKey =
       GlobalKey<SliverAnimatedListState>();
@@ -140,9 +97,7 @@ class _ChatListState extends State<ChatList>
     // Scroll to bottom when ChatList is created with existing messages
     // (e.g., loading a session from history). Without this, the initial
     // didUpdateWidget(widget) sees identical old/new lists and skips scrolling.
-    // Skipped when rememberScrollPosition is on — the Chat widget then restores
-    // the saved anchor instead of jumping to the bottom.
-    if (widget.items.length > 2 && !widget.rememberScrollPosition) {
+    if (widget.items.length > 2) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _smoothScrollToBottom();
       });
@@ -217,12 +172,11 @@ class _ChatListState extends State<ChatList>
 
   void _scrollToBottomIfNeeded(List<Object> oldList) {
     try {
-      bool newItemsAdded = false;
-      bool sessionSwitched = false;
+      bool shouldScroll = false;
 
       // Case 1: New items added (new message appended at end)
       if (oldList.length < widget.items.length) {
-        newItemsAdded = true;
+        shouldScroll = true;
       }
       // Case 2: Session switch (same count but different content)
       else if (oldList.length > 1 && widget.items.length > 1) {
@@ -232,22 +186,12 @@ class _ChatListState extends State<ChatList>
           final oldMessage = oldItem['message']! as types.Message;
           final message = item['message']! as types.Message;
           if (oldMessage.id != message.id) {
-            sessionSwitched = true;
+            shouldScroll = true;
           }
         }
       }
 
-      // Decide whether to auto-scroll to the bottom:
-      //  - New messages: follow along only when the viewport is already near
-      //    the bottom (otherwise the user is reading history, so we leave the
-      //    list in place — the app counts these as unread).
-      //  - Session switch: only jump in legacy mode. When rememberScrollPosition
-      //    is on, the Chat widget restores the saved anchor instead.
-      final shouldFollow = newItemsAdded && _isNearBottom;
-      final shouldJumpOnSwitch =
-          sessionSwitched && !widget.rememberScrollPosition;
-
-      if (shouldFollow || shouldJumpOnSwitch) {
+      if (shouldScroll) {
         // Wait one frame for the SliverAnimatedList to lay out newly inserted
         // items before measuring maxScrollExtent; the follow-up correction
         // inside [_smoothScrollToBottom] handles any residual height growth
@@ -264,19 +208,48 @@ class _ChatListState extends State<ChatList>
 
   /// Smoothly scroll the chat list to the latest message.
   ///
-  /// Wraps [smoothScrollToBottom] with a follow-up correction so we still land
-  /// exactly at the bottom after [SliverAnimatedList]'s item SizeTransitions
-  /// finish growing [maxScrollExtent] — otherwise the first scroll can stop a
-  /// few pixels short and the last messages pop in underneath.
+  /// Replaces the previous fixed 200ms / [Curves.easeInQuad] jump, which felt
+  /// stiff for two reasons:
+  /// 1. `easeInQuad` *accelerates* into the target, so the list slammed into
+  ///    the bottom instead of settling. [Curves.easeOutCubic] decelerates and
+  ///    lands softly.
+  /// 2. A fixed duration forced both tiny and huge scrolls into the same
+  ///    200ms window; long histories became a blurry snap. Scaling duration
+  ///    with the remaining distance keeps short scrolls quick and long scrolls
+  ///    readable (clamped to 250–700ms).
+  ///
+  /// A follow-up correction is scheduled so we still land exactly at the
+  /// bottom after [SliverAnimatedList]'s item SizeTransitions finish growing
+  /// [maxScrollExtent] — otherwise the first scroll can stop a few pixels
+  /// short and the last messages pop in underneath.
   void _smoothScrollToBottom() {
-    final firstDuration = smoothScrollToBottom(widget.scrollController);
+    final controller = widget.scrollController;
+    final firstDuration = _animateToBottomOnce(controller);
     if (firstDuration == Duration.zero) return;
 
     // Re-evaluate once the item size animations have settled.
     Future.delayed(firstDuration + const Duration(milliseconds: 80), () {
-      if (!mounted) return;
-      smoothScrollToBottom(widget.scrollController);
+      _animateToBottomOnce(controller);
     });
+  }
+
+  /// Animate [controller] to [maxScrollExtent] once.
+  ///
+  /// Returns the duration used, or [Duration.zero] when there is nothing to
+  /// scroll (already at the bottom / no clients / unmounted), so callers can
+  /// skip a redundant follow-up.
+  Duration _animateToBottomOnce(ScrollController controller) {
+    if (!mounted || !controller.hasClients) return Duration.zero;
+    final position = controller.position;
+    final distance = (position.maxScrollExtent - position.pixels).abs();
+    if (distance < 1) return Duration.zero;
+    final durationMs = (distance * 0.35).clamp(250.0, 700.0).round();
+    controller.animateTo(
+      position.maxScrollExtent,
+      duration: Duration(milliseconds: durationMs),
+      curve: Curves.easeOutCubic,
+    );
+    return Duration(milliseconds: durationMs);
   }
 
   T? _mapMessage<T>(Object maybeMessage, T Function(types.Message) f) {
@@ -313,19 +286,6 @@ class _ChatListState extends State<ChatList>
             setState(() {
               _indicatorOnScrollStatus = !_indicatorOnScrollStatus;
             });
-          }
-
-          // Track near-bottom state (hysteresis). Always tracked so the
-          // auto-follow gate (_scrollToBottomIfNeeded) works regardless of
-          // whether the app wires the callback.
-          final distance =
-              notification.metrics.maxScrollExtent - notification.metrics.pixels;
-          final near = _isNearBottom
-              ? distance <= _kShowButtonThreshold
-              : distance <= _kNearBottomThreshold;
-          if (near != _isNearBottom) {
-            _isNearBottom = near;
-            widget.onNearBottomChanged?.call(near);
           }
 
           if (widget.onEndReached == null || widget.isLastPage == true) {
